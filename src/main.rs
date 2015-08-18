@@ -78,7 +78,8 @@ struct Config {
     manifest_path: PathBuf,
     crate_name: String,
     base_override: CrateOverride,
-    next_override: CrateOverride
+    next_override: CrateOverride,
+    run_tests: bool,
 }
 
 #[derive(Clone)]
@@ -90,6 +91,7 @@ enum CrateOverride {
 type VersionNumber = String;
 
 fn get_config() -> Result<Config, Error> {
+    let run_tests = env::args().any(|arg| arg == "--test");
     let manifest = env::var("CRUSADER_MANIFEST");
     let manifest = manifest.unwrap_or_else(|_| "./Cargo.toml".to_string());
     let manifest = PathBuf::from(manifest);
@@ -100,7 +102,8 @@ fn get_config() -> Result<Config, Error> {
         manifest_path: manifest.clone(),
         crate_name: source_name,
         base_override: CrateOverride::Default,
-        next_override: CrateOverride::Source(manifest)
+        next_override: CrateOverride::Source(manifest),
+        run_tests: run_tests,
     })
 }
 
@@ -260,7 +263,7 @@ impl TestResult {
             data: TestResultData::Error(e)
         }
     }
-    
+
     fn quick_str(&self) -> &'static str {
         match self.data {
             TestResultData::Passed(..) => "passed",
@@ -352,8 +355,10 @@ fn run_test_local(config: &Config, rev_dep: RevDepName) -> TestResult {
 
     // TODO: Decide whether the version of our crate requested by the
     // rev dep is semver-compatible with the in-development version.
-    
-    let base_result = match compile_with_custom_dep(&rev_dep, &config.base_override) {
+
+    let base_result = match compile_with_custom_dep(&rev_dep,
+                                                    &config.base_override,
+                                                    config.run_tests) {
         Ok(r) => r,
         Err(e) => return TestResult::error(rev_dep, e)
     };
@@ -361,7 +366,9 @@ fn run_test_local(config: &Config, rev_dep: RevDepName) -> TestResult {
     if base_result.failed() {
         return TestResult::broken(rev_dep, base_result);
     }
-    let next_result = match compile_with_custom_dep(&rev_dep, &config.next_override) {
+    let next_result = match compile_with_custom_dep(&rev_dep,
+                                                    &config.next_override,
+                                                    config.run_tests) {
         Ok(r) => r,
         Err(e) => return TestResult::error(rev_dep, e)
     };
@@ -422,7 +429,8 @@ impl CompileResult {
     }
 }
 
-fn compile_with_custom_dep(rev_dep: &RevDep, krate: &CrateOverride) -> Result<CompileResult, Error> {
+fn compile_with_custom_dep(rev_dep: &RevDep, krate: &CrateOverride, run_tests: bool)
+                            -> Result<CompileResult, Error> {
     let ref crate_handle = try!(get_crate_handle(rev_dep));
     let temp_dir = try!(TempDir::new("crusader"));
     let ref source_dir = temp_dir.path().join("source");
@@ -441,8 +449,9 @@ fn compile_with_custom_dep(rev_dep: &RevDep, krate: &CrateOverride) -> Result<Co
     // NB: The way cargo searches for .cargo/config, which we use to
     // override dependencies, depends on the CWD, and is not affacted
     // by the --manifest-path flag, so this is changing directories.
+    let mode = if run_tests { "test" } else { "build" };
     let mut cmd = Command::new("cargo");
-    let cmd = cmd.arg("build")
+    let cmd = cmd.arg(mode)
         .current_dir(source_dir);
     debug!("running cargo: {:?}", cmd);
     let r = try!(cmd.output());
@@ -671,7 +680,7 @@ fn export_report(mut results: Vec<TestResult>) -> Result<(Summary, PathBuf), Err
         }
         try!(writeln!(file, "</div>"));
     }
-    
+
     try!(writeln!(file, "</body>"));
 
     Ok((s, path))
@@ -748,7 +757,7 @@ fn report_success(s: Summary, p: PathBuf) {
     println!("");
     println!("full report: {}", p.to_str().unwrap());
     println!("");
-    
+
     if s.regressed > 0 { std::process::exit(-2) }
 }
 
